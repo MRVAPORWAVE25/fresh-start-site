@@ -199,19 +199,67 @@ const engine = new Engine(GODOT_CONFIG);
 		}
 	} else {
 		setStatusMode('progress');
-		engine.startGame({
-			'onProgress': function (current, total) {
-				if (current > 0 && total > 0) {
-					statusProgress.value = current;
-					statusProgress.max = total;
-				} else {
-					statusProgress.removeAttribute('value');
-					statusProgress.removeAttribute('max');
+
+		// Merge split part files (Bombun.pck.partN, Bombun.wasm.partN) into single blobs
+		// before the engine fetches them. Intercept fetch so the engine loader is unchanged.
+		function mergeFiles(fileParts) {
+			return new Promise((resolve, reject) => {
+				let buffers = [];
+				function fetchPart(index) {
+					if (index >= fileParts.length) {
+						let mergedBlob = new Blob(buffers);
+						resolve(URL.createObjectURL(mergedBlob));
+						return;
+					}
+					fetch(fileParts[index]).then((response) => {
+						if (!response.ok) throw new Error("Missing part: " + fileParts[index]);
+						return response.arrayBuffer();
+					}).then((data) => {
+						buffers.push(data);
+						fetchPart(index + 1);
+					}).catch(reject);
 				}
-			},
-		}).then(() => {
-			setStatusMode('hidden');
-		}, displayFailureNotice);
+				fetchPart(0);
+			});
+		}
+		function getParts(file, start, end) {
+			let parts = [];
+			for (let i = start; i <= end; i++) {
+				parts.push(file + ".part" + i);
+			}
+			return parts;
+		}
+
+		const originalFetch = window.fetch.bind(window);
+
+		Promise.all([
+			mergeFiles(getParts("Bombun.pck", 1, 35)),
+			mergeFiles(getParts("Bombun.wasm", 1, 2)),
+		]).then(([pckUrl, wasmUrl]) => {
+			window.fetch = function (url, ...args) {
+				const u = typeof url === 'string' ? url : (url && url.url) || '';
+				if (u.endsWith("Bombun.pck")) {
+					return originalFetch(pckUrl, ...args);
+				} else if (u.endsWith("Bombun.wasm")) {
+					return originalFetch(wasmUrl, ...args);
+				}
+				return originalFetch(url, ...args);
+			};
+
+			engine.startGame({
+				'onProgress': function (current, total) {
+					if (current > 0 && total > 0) {
+						statusProgress.value = current;
+						statusProgress.max = total;
+					} else {
+						statusProgress.removeAttribute('value');
+						statusProgress.removeAttribute('max');
+					}
+				},
+			}).then(() => {
+				setStatusMode('hidden');
+			}, displayFailureNotice);
+		}).catch(displayFailureNotice);
 	}
 }());
 		</script>
