@@ -200,18 +200,19 @@ const engine = new Engine(GODOT_CONFIG);
 	} else {
 		setStatusMode('progress');
 
-		// Merge split part files (Bombun.pck.partN, Bombun.wasm.partN) into single blobs
-		// before the engine fetches them. Intercept fetch so the engine loader is unchanged.
-		function mergeFiles(fileParts) {
+		// Start merging the split files now, but install fetch interception before the
+		// engine starts. If Godot asks early, the fetch waits for the merge promise.
+		const originalFetch = window.fetch.bind(window);
+
+		function mergeFiles(fileParts, contentType) {
 			return new Promise((resolve, reject) => {
 				let buffers = [];
 				function fetchPart(index) {
 					if (index >= fileParts.length) {
-						let mergedBlob = new Blob(buffers);
-						resolve(URL.createObjectURL(mergedBlob));
+						resolve(new Blob(buffers, { type: contentType }));
 						return;
 					}
-					fetch(fileParts[index]).then((response) => {
+					originalFetch(fileParts[index]).then((response) => {
 						if (!response.ok) throw new Error("Missing part: " + fileParts[index]);
 						return response.arrayBuffer();
 					}).then((data) => {
@@ -229,37 +230,42 @@ const engine = new Engine(GODOT_CONFIG);
 			}
 			return parts;
 		}
+		const mergedFiles = {
+			"Bombun.pck": mergeFiles(getParts("Bombun.pck", 1, 35), "application/octet-stream"),
+			"Bombun.wasm": mergeFiles(getParts("Bombun.wasm", 1, 2), "application/wasm"),
+		};
 
-		const originalFetch = window.fetch.bind(window);
+		window.fetch = async function (url, ...args) {
+			const requestUrl = typeof url === 'string' ? url : (url && url.url) || '';
+			const pathname = requestUrl ? new URL(requestUrl, window.location.href).pathname : '';
+			const fileName = pathname.substring(pathname.lastIndexOf('/') + 1);
+			if (mergedFiles[fileName]) {
+				const blob = await mergedFiles[fileName];
+				return new Response(blob, {
+					status: 200,
+					statusText: 'OK',
+					headers: {
+						'Content-Type': blob.type,
+						'Content-Length': String(blob.size),
+					},
+				});
+			}
+			return originalFetch(url, ...args);
+		};
 
-		Promise.all([
-			mergeFiles(getParts("Bombun.pck", 1, 35)),
-			mergeFiles(getParts("Bombun.wasm", 1, 2)),
-		]).then(([pckUrl, wasmUrl]) => {
-			window.fetch = function (url, ...args) {
-				const u = typeof url === 'string' ? url : (url && url.url) || '';
-				if (u.endsWith("Bombun.pck")) {
-					return originalFetch(pckUrl, ...args);
-				} else if (u.endsWith("Bombun.wasm")) {
-					return originalFetch(wasmUrl, ...args);
+		engine.startGame({
+			'onProgress': function (current, total) {
+				if (current > 0 && total > 0) {
+					statusProgress.value = current;
+					statusProgress.max = total;
+				} else {
+					statusProgress.removeAttribute('value');
+					statusProgress.removeAttribute('max');
 				}
-				return originalFetch(url, ...args);
-			};
-
-			engine.startGame({
-				'onProgress': function (current, total) {
-					if (current > 0 && total > 0) {
-						statusProgress.value = current;
-						statusProgress.max = total;
-					} else {
-						statusProgress.removeAttribute('value');
-						statusProgress.removeAttribute('max');
-					}
-				},
-			}).then(() => {
-				setStatusMode('hidden');
-			}, displayFailureNotice);
-		}).catch(displayFailureNotice);
+			},
+		}).then(() => {
+			setStatusMode('hidden');
+		}, displayFailureNotice);
 	}
 }());
 		</script>
