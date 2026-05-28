@@ -199,60 +199,6 @@ const engine = new Engine(GODOT_CONFIG);
 		}
 	} else {
 		setStatusMode('progress');
-
-		// Start merging the split files now, but install fetch interception before the
-		// engine starts. If Godot asks early, the fetch waits for the merge promise.
-		const originalFetch = window.fetch.bind(window);
-
-		function mergeFiles(fileParts, contentType) {
-			return new Promise((resolve, reject) => {
-				let buffers = [];
-				function fetchPart(index) {
-					if (index >= fileParts.length) {
-						resolve(new Blob(buffers, { type: contentType }));
-						return;
-					}
-					originalFetch(fileParts[index]).then((response) => {
-						if (!response.ok) throw new Error("Missing part: " + fileParts[index]);
-						return response.arrayBuffer();
-					}).then((data) => {
-						buffers.push(data);
-						fetchPart(index + 1);
-					}).catch(reject);
-				}
-				fetchPart(0);
-			});
-		}
-		function getParts(file, start, end) {
-			let parts = [];
-			for (let i = start; i <= end; i++) {
-				parts.push(file + ".part" + i);
-			}
-			return parts;
-		}
-		const mergedFiles = {
-			"Bombun.pck": mergeFiles(getParts("Bombun.pck", 1, 35), "application/octet-stream"),
-			"Bombun.wasm": mergeFiles(getParts("Bombun.wasm", 1, 2), "application/wasm"),
-		};
-
-		window.fetch = async function (url, ...args) {
-			const requestUrl = typeof url === 'string' ? url : (url && url.url) || '';
-			const pathname = requestUrl ? new URL(requestUrl, window.location.href).pathname : '';
-			const fileName = pathname.substring(pathname.lastIndexOf('/') + 1);
-			if (mergedFiles[fileName]) {
-				const blob = await mergedFiles[fileName];
-				return new Response(blob, {
-					status: 200,
-					statusText: 'OK',
-					headers: {
-						'Content-Type': blob.type,
-						'Content-Length': String(blob.size),
-					},
-				});
-			}
-			return originalFetch(url, ...args);
-		};
-
 		engine.startGame({
 			'onProgress': function (current, total) {
 				if (current > 0 && total > 0) {
