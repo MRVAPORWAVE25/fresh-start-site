@@ -202,42 +202,31 @@ const engine = new Engine(GODOT_CONFIG);
 
 		// Merge split part files (Bombun.pck.partN, Bombun.wasm.partN) into single blobs
 		// before the engine fetches them. Intercept fetch so the engine loader is unchanged.
-		// No timeouts/AbortControllers — large parts must be allowed to finish; retry on transient failures.
-		function fetchPartWithRetry(url, attempt) {
-			attempt = attempt || 0;
-			return fetch(url, { cache: 'force-cache' }).then((response) => {
-				if (!response.ok) throw new Error('HTTP ' + response.status + ' for ' + url);
-				return response.arrayBuffer();
-			}).catch((err) => {
-				if (attempt >= 10) throw err;
-				const delay = Math.min(1000 * Math.pow(2, attempt), 15000);
-				console.warn('Retry', url, 'attempt', attempt + 1, 'in', delay, 'ms:', err && err.message);
-				return new Promise((r) => setTimeout(r, delay)).then(() => fetchPartWithRetry(url, attempt + 1));
-			});
-		}
-
 		function mergeFiles(fileParts) {
 			return new Promise((resolve, reject) => {
-				const buffers = new Array(fileParts.length);
-				let i = 0;
-				function next() {
-					if (i >= fileParts.length) {
-						resolve(URL.createObjectURL(new Blob(buffers)));
+				let buffers = [];
+				function fetchPart(index) {
+					if (index >= fileParts.length) {
+						let mergedBlob = new Blob(buffers);
+						resolve(URL.createObjectURL(mergedBlob));
 						return;
 					}
-					const idx = i++;
-					fetchPartWithRetry(fileParts[idx], 0).then((data) => {
-						buffers[idx] = data;
-						next();
+					fetch(fileParts[index]).then((response) => {
+						if (!response.ok) throw new Error("Missing part: " + fileParts[index]);
+						return response.arrayBuffer();
+					}).then((data) => {
+						buffers.push(data);
+						fetchPart(index + 1);
 					}).catch(reject);
 				}
-				next();
+				fetchPart(0);
 			});
 		}
-
 		function getParts(file, start, end) {
-			const parts = [];
-			for (let i = start; i <= end; i++) parts.push(file + '.part' + i);
+			let parts = [];
+			for (let i = start; i <= end; i++) {
+				parts.push(file + ".part" + i);
+			}
 			return parts;
 		}
 
