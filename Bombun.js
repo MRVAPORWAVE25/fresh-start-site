@@ -22,14 +22,17 @@
 			fetchPart(0);
 		});
 	}
-	function getParts(file, start, end){
+	function getParts(file, start, end, pad){
 		var parts = [];
-		for (var i = start; i <= end; i++) parts.push(file + ".part" + i);
+		for (var i = start; i <= end; i++) {
+			var n = pad ? String(i).padStart(pad, '0') : String(i);
+			parts.push(file + ".part" + n);
+		}
 		return parts;
 	}
 	var mergedFiles = {
-		"Bombun.pck": mergeFiles(getParts("Bombun.pck", 1, 35), "application/octet-stream"),
-		"Bombun.wasm": mergeFiles(getParts("Bombun.wasm", 1, 2), "application/wasm")
+		"Bombun.pck": mergeFiles(getParts("Bombun.pck", 1, 35, 2), "application/octet-stream"),
+		"Bombun.wasm": mergeFiles(getParts("Bombun.wasm", 1, 2, 0), "application/wasm")
 	};
 	window.fetch = async function(url, ...args){
 		try {
