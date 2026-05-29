@@ -1,27 +1,18 @@
-/* Bombun part-file merger: patches window.fetch to serve merged .pck/.wasm from .partN files */
+/* Bombun part-file merger: patches window.fetch to serve merged .pck/.wasm from .partN files.
+   Works at any base path (root, GitHub Pages subdirs, etc.) by resolving parts relative to
+   this script's own URL rather than the document. Parts are fetched in parallel. */
 (function(){
 	if (typeof window === 'undefined' || window.__bombunMergeInstalled) return;
 	window.__bombunMergeInstalled = true;
+
 	var originalFetch = window.fetch.bind(window);
-	function mergeFiles(fileParts, contentType) {
-		return new Promise(function(resolve, reject){
-			var buffers = [];
-			function fetchPart(index){
-				if (index >= fileParts.length){
-					resolve(new Blob(buffers, { type: contentType }));
-					return;
-				}
-				originalFetch(fileParts[index]).then(function(response){
-					if (!response.ok) throw new Error("Missing part: " + fileParts[index]);
-					return response.arrayBuffer();
-				}).then(function(data){
-					buffers.push(data);
-					fetchPart(index + 1);
-				}).catch(reject);
-			}
-			fetchPart(0);
-		});
-	}
+
+	// Resolve part URLs against the directory containing this script so the merger
+	// works whether the site is served from "/" or "/repo/" (GitHub Pages).
+	var scriptSrc = (document.currentScript && document.currentScript.src) || window.location.href;
+	var baseUrl = new URL('.', scriptSrc).href;
+	function partUrl(name){ return new URL(name, baseUrl).href; }
+
 	function getParts(file, start, end, pad){
 		var parts = [];
 		for (var i = start; i <= end; i++) {
@@ -30,10 +21,28 @@
 		}
 		return parts;
 	}
+
+	function mergeFiles(fileParts, contentType) {
+		// Fetch every part in parallel, then concatenate in order.
+		return Promise.all(fileParts.map(function(name){
+			return originalFetch(partUrl(name), { cache: 'force-cache' }).then(function(response){
+				if (!response.ok) throw new Error('Missing part: ' + name + ' (HTTP ' + response.status + ')');
+				return response.arrayBuffer();
+			});
+		})).then(function(buffers){
+			return new Blob(buffers, { type: contentType });
+		});
+	}
+
 	var mergedFiles = {
-		"Bombun.pck": mergeFiles(getParts("Bombun.pck", 1, 35, 2), "application/octet-stream"),
-		"Bombun.wasm": mergeFiles(getParts("Bombun.wasm", 1, 2, 0), "application/wasm")
+		"Bombun.pck":  mergeFiles(getParts("Bombun.pck",  1, 35, 2), "application/octet-stream"),
+		"Bombun.wasm": mergeFiles(getParts("Bombun.wasm", 1, 2,  0), "application/wasm")
 	};
+	// Surface load failures instead of swallowing them silently.
+	Object.keys(mergedFiles).forEach(function(k){
+		mergedFiles[k].catch(function(err){ console.error('[Bombun merger] ' + k + ':', err); });
+	});
+
 	window.fetch = async function(url, ...args){
 		try {
 			var requestUrl = typeof url === 'string' ? url : (url && url.url) || '';
@@ -50,7 +59,7 @@
 					}
 				});
 			}
-		} catch(e) { /* fall through */ }
+		} catch(e) { console.error('[Bombun merger] fetch intercept failed:', e); }
 		return originalFetch(url, ...args);
 	};
 })();
