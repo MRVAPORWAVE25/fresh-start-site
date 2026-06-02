@@ -71,15 +71,50 @@
 		"Bombun.pck":  { parts: getParts("Bombun.pck",  1, 35, 2), contentType: "application/octet-stream", concurrency: 4, promise: null }
 	};
 
+	// Persistent cache across reloads: once a file is fully merged, stash the
+	// blob in the Cache Storage API. Next page load we skip the 35-part fetch
+	// entirely and go straight from cache to engine. Bump CACHE_NAME to bust.
+	var CACHE_NAME = 'bombun-merged-v1';
+	var cacheSupported = (typeof caches !== 'undefined');
+
+	function cacheKey(fileName){ return new Request(partUrl('__merged__/' + fileName)); }
+
+	function readFromCache(fileName){
+		if (!cacheSupported) return Promise.resolve(null);
+		return caches.open(CACHE_NAME).then(function(c){ return c.match(cacheKey(fileName)); })
+			.then(function(resp){ return resp ? resp.blob() : null; })
+			.catch(function(){ return null; });
+	}
+
+	function writeToCache(fileName, blob){
+		if (!cacheSupported) return;
+		caches.open(CACHE_NAME).then(function(c){
+			var resp = new Response(blob, { headers: { 'Content-Type': blob.type, 'Content-Length': String(blob.size) } });
+			return c.put(cacheKey(fileName), resp);
+		}).then(function(){
+			console.log('[Bombun merger] cached ' + fileName + ' (' + blob.size + ' bytes) for next load');
+		}).catch(function(err){
+			console.warn('[Bombun merger] cache write failed for ' + fileName + ':', err);
+		});
+	}
+
 	function getMerged(fileName){
 		var entry = registry[fileName];
 		if (!entry) return null;
 		if (!entry.promise) {
-			console.log('[Bombun merger] merging ' + fileName + ' (' + entry.parts.length + ' parts)');
-			entry.promise = mergeFiles(entry.parts, entry.contentType, entry.concurrency);
-			entry.promise.then(function(blob){
-				console.log('[Bombun merger] ' + fileName + ' ready: ' + blob.size + ' bytes');
-			}).catch(function(err){
+			entry.promise = readFromCache(fileName).then(function(cached){
+				if (cached) {
+					console.log('[Bombun merger] ' + fileName + ' served from cache: ' + cached.size + ' bytes');
+					return cached;
+				}
+				console.log('[Bombun merger] merging ' + fileName + ' (' + entry.parts.length + ' parts)');
+				return mergeFiles(entry.parts, entry.contentType, entry.concurrency).then(function(blob){
+					console.log('[Bombun merger] ' + fileName + ' ready: ' + blob.size + ' bytes');
+					writeToCache(fileName, blob);
+					return blob;
+				});
+			});
+			entry.promise.catch(function(err){
 				console.error('[Bombun merger] ' + fileName + ':', err);
 				entry.promise = null; // allow retry on next fetch
 			});
